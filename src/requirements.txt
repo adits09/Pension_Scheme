@@ -6,3 +6,4 @@ sentence-transformers
 chromadb
 langchain-google-genai
 python-dotenv
+gunicorn
