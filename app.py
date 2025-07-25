@@ -427,3 +427,8 @@ if __name__ == '__main__':
         print(f">>Failed to start server: {e}")
         import traceback
         traceback.print_exc()
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
