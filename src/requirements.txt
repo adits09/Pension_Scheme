@@ -5,6 +5,7 @@ nltk
 sentence-transformers
 chromadb
 langchain-google-genai
+langchain
 python-dotenv
 gunicorn   
 beautifulsoup4 
