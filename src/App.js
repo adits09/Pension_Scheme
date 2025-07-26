@@ -38,7 +38,7 @@ const ChatComponent = () => {
       setIsLoading(true);
 
       try {
-        const response = await fetch('http://localhost:5000/api/chat', {
+        const response = await fetch('https://pension-scheme.onrender.com/api/chat', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -85,12 +85,12 @@ const ChatComponent = () => {
     const file = event.target.files[0];
     if (file && file.type === 'application/pdf') {
       const formData = new FormData();
-      formData.append('file', file); // CRUCIAL: 'file' matches Flask's request.files.get('file')
+      formData.append('file', file); 
 
       try {
-        const response = await fetch('http://localhost:5000/api/upload-pdf', {
+        const response = await fetch('https://pension-scheme.onrender.com/api/upload-pdf', {
           method: 'POST',
-          body: formData, // DO NOT set Content-Type header!
+          body: formData, 
         });
 
         const data = await response.json();
@@ -194,7 +194,7 @@ const ChatComponent = () => {
             <div className="message-input-wrapper">
               <input
                 type="file"
-                name="file" // <-- CRUCIAL for Flask!
+                name="file" 
                 accept=".pdf"
                 onChange={handleFileUpload}
                 style={{ display: 'none' }}
