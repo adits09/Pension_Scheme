@@ -93,7 +93,14 @@ const ChatComponent = () => {
           body: formData, 
         });
 
-        const data = await response.json();
+        let data;
+        try {
+        data = await response.json();
+        } catch (err) {
+        console.error('Invalid JSON in upload response:', err);
+        alert('Upload failed: Server returned invalid response.');
+        return;
+        }
         if (data.status === 'success') {
           const uploadMessage = {
             id: Date.now(),
