@@ -27,6 +27,9 @@ collection = None
 sentence_model = None
 default_pdf_loaded = False
 
+@app.route("/")
+def home():
+    return "Backend is running successfully!"
 def simple_sent_tokenize(text):
     abbreviations = r'\b(?:Dr|Mr|Mrs|Ms|Prof|Sr|Jr|vs|etc|Inc|Corp|Ltd)\.'
     text = re.sub(abbreviations, lambda m: m.group(0).replace('.', '<DOT>'), text, flags=re.IGNORECASE)
