@@ -17,7 +17,7 @@ from langchain.memory import ConversationBufferMemory
 from dotenv import load_dotenv
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB
 CORS(app, origins=["*"], methods=['GET', 'POST', 'OPTIONS'], allow_headers=['*'])
 load_dotenv()
 
@@ -25,6 +25,11 @@ llm = None
 conversation = None
 collection = None
 sentence_model = None
+default_pdf_loaded = False
+
+@app.route("/")
+def home():
+    return "Backend is running successfully!"
 
 def simple_sent_tokenize(text):
     abbreviations = r'\b(?:Dr|Mr|Mrs|Ms|Prof|Sr|Jr|vs|etc|Inc|Corp|Ltd)\.'
@@ -99,16 +104,28 @@ def extract_structured_data(soup):
         structured['key_points'].append(strong.get_text(strip=True))
     return structured
 
+def is_inappropriate_request(question):
+    keywords = ["poem", "story", "song", "draw", "joke", "recipe", "java", "python"]
+    return any(kw in question.lower() for kw in keywords)
+
+def is_rajasthan_government_related(question):
+    gov_keywords = ["rajasthan", "scheme", "yojana", "benefit", "government"]
+    return any(kw in question.lower() for kw in gov_keywords)
+
 def initialize_components():
     global llm, conversation, collection, sentence_model
     try:
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
-            print("[ERROR] GEMINI_API_KEY not found!")
+            print("Missing GEMINI_API_KEY")
             return False
-        llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.3, google_api_key=api_key)
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-1.5-flash",
+            temperature=0.3,
+            google_api_key=api_key
+        )
         memory = ConversationBufferMemory()
-        conversation = ConversationChain(llm=llm, memory=memory, verbose=False)
+        conversation = ConversationChain(llm=llm, memory=memory)
         sentence_model = SentenceTransformer('all-mpnet-base-v2')
         chroma_client = chromadb.PersistentClient(path="./chroma_store")
         embedded_fxn = SentenceTransformerEmbeddingFunction(model_name="all-mpnet-base-v2")
@@ -119,60 +136,69 @@ def initialize_components():
         collection = chroma_client.get_or_create_collection(name="pdf_chunks", embedding_function=embedded_fxn)
         return True
     except Exception as e:
-        print(f"[ERROR] Failed to initialize components: {e}")
+        print(f"Init error: {e}")
         return False
-
-@app.route("/")
-def home():
-    return "Backend is running successfully!"
 
 @app.route('/api/upload-pdf', methods=['POST'])
 def upload_pdf():
-    if not request.files:
-        return jsonify({"error": "No files provided"}), 400
-    file = request.files.get('file')
-    if not file or file.filename == '':
-        return jsonify({"error": "No file selected"}), 400
-    filename = secure_filename(file.filename)
-    filepath = os.path.join("temp_uploads", filename)
-    os.makedirs("temp_uploads", exist_ok=True)
-    file.save(filepath)
-    doc = fitz.open(filepath)
-    full_text = "\n".join(page.get_text() for page in doc)
-    doc.close()
-    sentences = simple_sent_tokenize(full_text)
-    chunk_size, overlap = 5, 2
-    chunks = [" ".join(sentences[i:i + chunk_size]) for i in range(0, len(sentences), chunk_size - overlap)]
-    for idx, chunk in enumerate(chunks):
-        collection.add(documents=[chunk], ids=[f"user_{filename}_{idx}"], metadatas=[{"source": filename}])
-    os.remove(filepath)
-    return jsonify({
-        "message": "PDF uploaded and processed successfully!",
-        "filename": filename,
-        "chunks_created": len(chunks),
-        "status": "success"
-    }), 200
+    try:
+        if not request.files:
+            return jsonify({"error": "No files provided"}), 400
+        file = request.files.get('file')
+        if not file:
+            return jsonify({"error": "No file uploaded"}), 400
+        filename = secure_filename(file.filename)
+        filepath = os.path.join("temp_uploads", filename)
+        os.makedirs("temp_uploads", exist_ok=True)
+        file.save(filepath)
+        doc = fitz.open(filepath)
+        full_text = "\n".join(page.get_text() for page in doc)
+        doc.close()
+        sentences = simple_sent_tokenize(full_text)
+        chunk_size = 5
+        overlap = 2
+        chunks = []
+        for i in range(0, len(sentences), chunk_size - overlap):
+            chunk = sentences[i:i + chunk_size]
+            chunks.append(" ".join(chunk))
+        for idx, chunk in enumerate(chunks):
+            collection.add(
+                documents=[chunk],
+                ids=[f"user_{filename}_{idx}"],
+                metadatas=[{"source": filename}]
+            )
+        os.remove(filepath)
+        return jsonify({"message": "PDF uploaded and processed", "chunks": len(chunks), "status": "success"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
-    data = request.get_json()
-    if not data:
-        return jsonify({"error": "No JSON data provided"}), 400
-    question = data.get('message', '').strip()
-    if not question:
-        return jsonify({"error": "No message provided"}), 400
-    if collection is None or llm is None:
-        return jsonify({"error": "System components not initialized"}), 500
-    results = collection.query(query_texts=[question], n_results=3, include=["documents"])
-    relevant_docs = results.get('documents', [[]])[0] if results.get('documents') else []
-    context = "\n\n".join(relevant_docs)
-    prompt = f"Answer this professionally based on Rajasthan govt schemes:\n\n{context}\n\nQ: {question}"
-    raw_response = conversation.predict(input=prompt)
-    formatted = format_ai_response(raw_response)
-    return jsonify({"response": formatted, "question": question})
+    try:
+        data = request.get_json()
+        question = data.get("message", "").strip()
+        if is_inappropriate_request(question):
+            return jsonify({"response": {"raw": "Sorry, I can only help with Rajasthan government-related topics."}})
+        if not is_rajasthan_government_related(question):
+            return jsonify({"response": {"raw": "Please ask a question related to Rajasthan government services or schemes."}})
+        results = collection.query(query_texts=[question], n_results=3, include=["documents"])
+        context = "\n\n".join(results.get("documents", [[]])[0])
+        prompt = f"""You are SevaSaathi, assistant for Rajasthan government services.
+Context:
+{context}
+Question: {question}"""
+        raw_response = conversation.predict(input=prompt)
+        formatted = format_ai_response(raw_response)
+        return jsonify({"response": {
+            "raw": raw_response,
+            "html": formatted['html'],
+            "text": formatted['text'],
+            "structured": formatted['structured']
+        }})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    print("[INFO] Starting SevaSaathi Server")
     initialize_components()
     port = int(os.environ.get("PORT", 10000))
-    app.run(debug=True, host="0.0.0.0", port=port)
+    app.run(debug=False, host="0.0.0.0", port=port)
