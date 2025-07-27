@@ -43,124 +43,59 @@ def api_health():
 
 @app.route('/api/upload-pdf', methods=['POST'])
 def upload_pdf():
+    logger.info("=== PDF Upload Started ===")
     try:
-        logger.info("Upload PDF endpoint called")
         global chunks_storage
         
-        # Check if file is in request
+        # Basic request validation
+        logger.info("Checking request...")
         if 'file' not in request.files:
-            logger.error("No file in request")
-            return jsonify({"error": "No file part"}), 400
+            logger.error("No file in request.files")
+            return jsonify({"error": "No file part in request"}), 400
             
         file = request.files['file']
-        logger.info(f"File received: {file.filename}")
+        logger.info(f"File object received: {type(file)}")
+        logger.info(f"Filename: {file.filename}")
         
-        if file.filename == '':
-            return jsonify({"error": "No selected file"}), 400
+        if not file or file.filename == '':
+            logger.error("Empty filename")
+            return jsonify({"error": "No file selected"}), 400
             
+        # File validation
         if not file.filename.lower().endswith('.pdf'):
+            logger.error(f"Invalid file type: {file.filename}")
             return jsonify({"error": "Only PDF files are allowed"}), 400
 
+        # Basic processing without dependencies
         filename = secure_filename(file.filename)
-        logger.info(f"Processing file: {filename}")
+        logger.info(f"Secure filename: {filename}")
         
-        # Try to import and use PyMuPDF
+        # For now, let's just store a placeholder to test if the basic flow works
         try:
-            import fitz
-        except ImportError as e:
-            logger.error(f"PyMuPDF import error: {str(e)}")
-            return jsonify({"error": "PDF processing library not available"}), 500
-        
-        # Create temp directory
-        temp_dir = "/tmp" if os.path.exists("/tmp") else "temp_uploads"
-        try:
-            os.makedirs(temp_dir, exist_ok=True)
-        except Exception as e:
-            logger.error(f"Could not create temp directory: {str(e)}")
-            return jsonify({"error": "Server storage error"}), 500
-            
-        filepath = os.path.join(temp_dir, filename)
-        
-        # Save file
-        try:
-            file.save(filepath)
-            logger.info(f"File saved to: {filepath}")
-        except Exception as e:
-            logger.error(f"Could not save file: {str(e)}")
-            return jsonify({"error": "Could not save uploaded file"}), 500
-
-        # Extract text from PDF
-        try:
-            doc = fitz.open(filepath)
-            full_text = ""
-            for page_num in range(len(doc)):
-                page = doc.load_page(page_num)
-                full_text += page.get_text()
-            doc.close()
-            logger.info(f"Extracted {len(full_text)} characters from PDF")
-        except Exception as pdf_error:
-            logger.error(f"PDF processing error: {str(pdf_error)}")
-            if os.path.exists(filepath):
-                os.remove(filepath)
-            return jsonify({"error": f"Could not process PDF: {str(pdf_error)}"}), 400
-        
-        if not full_text.strip():
-            if os.path.exists(filepath):
-                os.remove(filepath)
-            return jsonify({"error": "Could not extract text from PDF"}), 400
-
-        # Simple text chunking
-        try:
-            # Split by sentences using simple regex
-            import re
-            sentences = re.split(r'(?<=[.!?])\s+', full_text)
-            sentences = [s.strip() for s in sentences if s.strip()]
-            
-            # Create chunks of 5 sentences with 2 sentence overlap
-            chunks = []
-            chunk_size = 5
-            overlap = 2
-            
-            for i in range(0, len(sentences), chunk_size - overlap):
-                chunk_text = " ".join(sentences[i:i + chunk_size])
-                if chunk_text.strip():
-                    chunks.append(chunk_text)
-            
-            logger.info(f"Created {len(chunks)} chunks")
-        except Exception as e:
-            logger.error(f"Text chunking error: {str(e)}")
-            chunks = [full_text]  # Fallback to single chunk
-
-        # Store chunks in memory
-        try:
+            # Simple storage test
             chunks_storage[filename] = {
-                'chunks': chunks,
+                'chunks': [f"Sample text from {filename}"],
                 'upload_time': time.time(),
-                'full_text': full_text[:1000] + "..." if len(full_text) > 1000 else full_text  # Store summary
+                'full_text': f"This is a test upload of {filename}"
             }
-            logger.info(f"Stored {len(chunks)} chunks for {filename}")
-        except Exception as e:
-            logger.error(f"Storage error: {str(e)}")
-            if os.path.exists(filepath):
-                os.remove(filepath)
-            return jsonify({"error": "Could not store document data"}), 500
-
-        # Clean up file
-        try:
-            if os.path.exists(filepath):
-                os.remove(filepath)
-        except Exception as e:
-            logger.warning(f"Could not remove temp file: {str(e)}")
-        
-        return jsonify({
-            "status": "success",
-            "message": f"PDF processed successfully! Created {len(chunks)} chunks.",
-            "chunks_created": len(chunks),
-            "filename": filename
-        })
+            logger.info(f"Test storage successful for {filename}")
+            
+            return jsonify({
+                "status": "success",
+                "message": f"File {filename} uploaded successfully! (Test mode - PDF processing disabled)",
+                "chunks_created": 1,
+                "filename": filename
+            })
+            
+        except Exception as storage_error:
+            logger.error(f"Storage test failed: {str(storage_error)}")
+            return jsonify({"error": f"Storage error: {str(storage_error)}"}), 500
         
     except Exception as e:
-        logger.error(f"Upload error: {str(e)}")
+        logger.error(f"=== Upload Failed ===")
+        logger.error(f"Error type: {type(e).__name__}")
+        logger.error(f"Error message: {str(e)}")
+        logger.error("Full traceback:")
         logger.error(traceback.format_exc())
         return jsonify({"error": f"Upload failed: {str(e)}"}), 500
 
