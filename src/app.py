@@ -49,11 +49,10 @@ def upload_pdf():
         logger.info("Step 1: Checking file in request")
         if 'file' not in request.files:
             logger.error("No 'file' key in request.files")
-            logger.info(f"Available keys: {list(request.files.keys())}")
             return jsonify({"error": "No file uploaded"}), 400
         
         file = request.files['file']
-        logger.info(f"Step 2: File received - name: {file.filename}, type: {type(file)}")
+        logger.info(f"Step 2: File received - name: {file.filename}")
         
         # Step 2: Validate file
         if not file or file.filename == '':
@@ -68,49 +67,124 @@ def upload_pdf():
         filename = secure_filename(file.filename)
         logger.info(f"Step 3: Secure filename: {filename}")
         
-        # Step 4: Try to read file content (simple test)
+        # Step 4: Save file temporarily and extract text
         try:
-            file_content = file.read()
-            file_size = len(file_content)
-            logger.info(f"Step 4: File read successfully - size: {file_size} bytes")
+            # Create temp directory
+            temp_dir = "/tmp" if os.path.exists("/tmp") else "temp_uploads"
+            os.makedirs(temp_dir, exist_ok=True)
+            filepath = os.path.join(temp_dir, filename)
             
-            # Reset file pointer for potential future use
-            file.seek(0)
+            # Save file
+            file.save(filepath)
+            logger.info(f"File saved to: {filepath}")
             
-        except Exception as read_error:
-            logger.error(f"Could not read file: {str(read_error)}")
-            return jsonify({"error": "Could not read uploaded file"}), 400
+            # Try to import PyMuPDF for PDF processing
+            try:
+                import fitz
+                logger.info("PyMuPDF imported successfully")
+            except ImportError:
+                # Fallback - just store file info without text extraction
+                logger.warning("PyMuPDF not available - storing file without text extraction")
+                document_info = {
+                    'filename': filename,
+                    'upload_time': time.time(),
+                    'status': 'uploaded_no_text_extraction',
+                    'text': 'PDF text extraction not available',
+                    'chunks': ['PDF uploaded but text extraction failed - please install PyMuPDF']
+                }
+                documents[filename] = document_info
+                os.remove(filepath)
+                return jsonify({
+                    "status": "success",
+                    "message": f"File uploaded but text extraction failed. Install PyMuPDF for full functionality.",
+                    "filename": filename,
+                    "chunks_created": 1
+                })
+            
+            # Extract text from PDF
+            doc = fitz.open(filepath)
+            full_text = ""
+            for page_num in range(len(doc)):
+                page = doc.load_page(page_num)
+                text = page.get_text()
+                full_text += text + "\n"
+            doc.close()
+            
+            logger.info(f"Extracted {len(full_text)} characters from PDF")
+            
+            # Clean up temp file
+            os.remove(filepath)
+            
+            if not full_text.strip():
+                return jsonify({"error": "Could not extract text from PDF - file might be scanned or corrupted"}), 400
+            
+        except Exception as pdf_error:
+            logger.error(f"PDF processing error: {str(pdf_error)}")
+            if os.path.exists(filepath):
+                os.remove(filepath)
+            return jsonify({"error": f"Could not process PDF: {str(pdf_error)}"}), 500
         
-        # Step 5: For now, just store basic info (no PDF processing)
+        # Step 5: Create text chunks for better searching
+        try:
+            # Split text into sentences
+            sentences = re.split(r'(?<=[.!?])\s+', full_text)
+            sentences = [s.strip() for s in sentences if s.strip() and len(s) > 10]
+            
+            # Create overlapping chunks of sentences
+            chunks = []
+            chunk_size = 3  # sentences per chunk
+            overlap = 1     # overlapping sentences
+            
+            for i in range(0, len(sentences), chunk_size - overlap):
+                chunk = " ".join(sentences[i:i + chunk_size])
+                if chunk.strip():
+                    chunks.append(chunk.strip())
+            
+            # If no good chunks, use paragraphs
+            if not chunks:
+                paragraphs = [p.strip() for p in full_text.split('\n\n') if p.strip() and len(p) > 20]
+                chunks = paragraphs[:20]  # Limit to 20 paragraphs
+            
+            # If still no chunks, use the full text
+            if not chunks:
+                chunks = [full_text]
+            
+            logger.info(f"Created {len(chunks)} text chunks")
+            
+        except Exception as chunk_error:
+            logger.error(f"Text chunking error: {str(chunk_error)}")
+            chunks = [full_text]  # Fallback to full text
+        
+        # Step 6: Store document with text and chunks
         try:
             document_info = {
                 'filename': filename,
-                'size': file_size,
                 'upload_time': time.time(),
-                'status': 'uploaded_successfully',
-                'content_preview': f'PDF file with {file_size} bytes'
+                'status': 'processed_successfully',
+                'text': full_text,
+                'chunks': chunks,
+                'chunk_count': len(chunks),
+                'character_count': len(full_text)
             }
             
             documents[filename] = document_info
-            logger.info(f"Step 5: Document stored successfully: {filename}")
+            logger.info(f"Document stored successfully: {filename} with {len(chunks)} chunks")
             
             return jsonify({
                 "status": "success",
-                "message": f"File '{filename}' uploaded successfully! ({file_size} bytes)",
+                "message": f"PDF processed successfully! Extracted text and created {len(chunks)} searchable chunks.",
                 "filename": filename,
-                "size": file_size,
-                "note": "PDF processing will be added in next step"
+                "chunks_created": len(chunks),
+                "characters_extracted": len(full_text)
             })
             
         except Exception as storage_error:
             logger.error(f"Storage failed: {str(storage_error)}")
-            return jsonify({"error": f"Could not store file info: {str(storage_error)}"}), 500
+            return jsonify({"error": f"Could not store document: {str(storage_error)}"}), 500
             
     except Exception as e:
         logger.error("=== UPLOAD FAILED ===")
-        logger.error(f"Error type: {type(e).__name__}")
-        logger.error(f"Error message: {str(e)}")
-        logger.error("Full traceback:")
+        logger.error(f"Error: {str(e)}")
         logger.error(traceback.format_exc())
         return jsonify({"error": f"Upload failed: {str(e)}"}), 500
 
@@ -131,28 +205,93 @@ def chat():
         logger.info(f"Question: {question}")
         logger.info(f"Documents available: {len(documents)}")
         
-        # Generate simple response
+        # Search through documents
         if documents:
-            doc_list = list(documents.keys())
-            response_text = f"""I have {len(documents)} document(s) uploaded: {', '.join(doc_list)}
+            # Find relevant chunks
+            relevant_chunks = []
+            question_words = set(question.lower().split())
+            
+            for filename, doc_info in documents.items():
+                if 'chunks' in doc_info and doc_info['chunks']:
+                    for i, chunk in enumerate(doc_info['chunks']):
+                        # Simple keyword matching
+                        chunk_words = set(chunk.lower().split())
+                        common_words = question_words & chunk_words
+                        
+                        if len(common_words) > 0:
+                            # Calculate relevance score
+                            relevance = len(common_words) / len(question_words)
+                            relevant_chunks.append({
+                                'text': chunk,
+                                'relevance': relevance,
+                                'source': filename,
+                                'chunk_id': i
+                            })
+            
+            # Sort by relevance and take top results
+            relevant_chunks.sort(key=lambda x: x['relevance'], reverse=True)
+            top_chunks = relevant_chunks[:3]  # Top 3 most relevant chunks
+            
+            if top_chunks:
+                # Generate response based on relevant content
+                response_parts = [f'Based on the document "{top_chunks[0]["source"]}", here\'s what I found:\n']
+                
+                for i, chunk_info in enumerate(top_chunks, 1):
+                    response_parts.append(f"**Relevant Section {i}:**")
+                    response_parts.append(chunk_info['text'])
+                    response_parts.append("")  # Empty line
+                
+                response_parts.append(f"This information comes from {len(set(c['source'] for c in top_chunks))} document(s) and addresses your question about: {question}")
+                
+                response_text = "\n".join(response_parts)
+                
+            else:
+                # No relevant content found
+                doc_names = list(documents.keys())
+                response_text = f"""I couldn't find specific information about "{question}" in the uploaded documents.
 
-Your question: "{question}"
+The uploaded documents are: {', '.join(doc_names)}
 
-Currently, I can only confirm that your documents are uploaded successfully. PDF text processing will be added in the next update.
+Try asking more specific questions about:
+- Scheme names mentioned in the documents
+- Eligibility criteria
+- Application procedures
+- Required documents
+- Contact information
 
-For now, I can tell you:
-- Number of documents: {len(documents)}
-- Document names: {', '.join(doc_list)}
-- Upload times: {[f"{name}: {time.ctime(info['upload_time'])}" for name, info in documents.items()]}"""
-        else:
-            response_text = f"""Your question: "{question}"
-
-I don't have any documents uploaded yet. Please upload a PDF file first, then I'll be able to help you find information in it.
-
-Once you upload documents, I'll be able to search through them and provide relevant information about Rajasthan government schemes."""
+Or try rephrasing your question using different keywords."""
         
-        # Simple HTML formatting
-        html_response = f'<div class="ai-response"><p>{response_text.replace(chr(10), "</p><p>")}</p></div>'
+        else:
+            # No documents uploaded
+            response_text = f"""I don't have any documents uploaded yet to answer your question: "{question}"
+
+Please upload PDF documents related to Rajasthan government schemes first, then I'll be able to search through them and provide specific information.
+
+Once you upload documents, you can ask about:
+- Specific government schemes
+- Eligibility requirements
+- Application processes
+- Required documents
+- Contact details"""
+        
+        # Format HTML response
+        try:
+            # Simple HTML formatting
+            html_lines = []
+            for line in response_text.split('\n'):
+                if line.strip():
+                    if line.startswith('**') and line.endswith(':**'):
+                        # Bold headers
+                        clean_line = line.replace('**', '').replace(':', '')
+                        html_lines.append(f'<p><strong>{clean_line}:</strong></p>')
+                    else:
+                        html_lines.append(f'<p>{line}</p>')
+            
+            html_response = f'<div class="ai-response">{"".join(html_lines)}</div>'
+            
+        except Exception as html_error:
+            logger.warning(f"HTML formatting failed: {str(html_error)}")
+            html_response = f'<div class="ai-response"><p>{response_text}</p></div>'
         
         return jsonify({
             "response": {
@@ -160,7 +299,8 @@ Once you upload documents, I'll be able to search through them and provide relev
                 "html": html_response,
                 "text": response_text
             },
-            "documents_available": len(documents)
+            "documents_searched": len(documents),
+            "relevant_chunks_found": len(top_chunks) if 'top_chunks' in locals() else 0
         })
         
     except Exception as e:
