@@ -1,6 +1,7 @@
 import os
 import logging
 import traceback
+import time
 os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
 from flask import Flask, request, jsonify
@@ -84,8 +85,18 @@ def upload_pdf():
     try:
         global collection
         
+        # Check if collection is initialized
         if collection is None:
-            return jsonify({"error": "System not initialized properly"}), 500
+            logger.error("Collection is None - attempting to reinitialize")
+            try:
+                initialize_components()
+            except Exception as init_error:
+                logger.error(f"Reinitialization failed: {str(init_error)}")
+                return jsonify({"error": "System initialization failed. Please try again later."}), 500
+        
+        # Double check collection is now available
+        if collection is None:
+            return jsonify({"error": "Database not available. Please contact support."}), 500
             
         if 'file' not in request.files:
             return jsonify({"error": "No file part"}), 400
@@ -109,9 +120,13 @@ def upload_pdf():
         logger.info(f"File saved to: {filepath}")
 
         # Extract text from PDF
-        doc = fitz.open(filepath)
-        full_text = "\n".join(page.get_text() for page in doc)
-        doc.close()
+        try:
+            doc = fitz.open(filepath)
+            full_text = "\n".join(page.get_text() for page in doc)
+            doc.close()
+        except Exception as pdf_error:
+            os.remove(filepath)
+            return jsonify({"error": f"Could not process PDF: {str(pdf_error)}"}), 400
         
         if not full_text.strip():
             os.remove(filepath)
@@ -128,17 +143,27 @@ def upload_pdf():
             if chunk_text.strip():
                 chunks.append(chunk_text)
 
-        # Add to collection
+        # Add to collection with retry
         if chunks:
             try:
+                # Test collection is working
+                current_count = collection.count()
+                logger.info(f"Current collection count: {current_count}")
+                
                 collection.add(
                     documents=chunks,
-                    ids=[f"{filename}_{idx}" for idx in range(len(chunks))],
-                    metadatas=[{"source": filename} for _ in chunks]
+                    ids=[f"{filename}_{idx}_{int(time.time())}" for idx in range(len(chunks))],  # Add timestamp to avoid ID conflicts
+                    metadatas=[{"source": filename, "upload_time": str(int(time.time()))} for _ in chunks]
                 )
                 logger.info(f"Added {len(chunks)} chunks to collection")
+                
+                # Verify addition worked
+                new_count = collection.count()
+                logger.info(f"New collection count: {new_count}")
+                
             except Exception as e:
                 logger.error(f"Error adding to collection: {str(e)}")
+                logger.error(traceback.format_exc())
                 os.remove(filepath)
                 return jsonify({"error": f"Database error: {str(e)}"}), 500
 
@@ -235,6 +260,44 @@ Please provide a helpful and accurate response based on the context provided. If
 def initialize_components():
     global llm, conversation, collection, sentence_model
     try:
+        # Initialize ChromaDB first with retry logic
+        logger.info("Initializing ChromaDB...")
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # Try in-memory first for Render
+                chroma_client = chromadb.Client()
+                embedder = SentenceTransformerEmbeddingFunction(model_name="all-mpnet-base-v2")
+                collection = chroma_client.get_or_create_collection(
+                    name="pdf_chunks", 
+                    embedding_function=embedder
+                )
+                logger.info(f"ChromaDB initialized successfully (attempt {attempt + 1})")
+                break
+            except Exception as e:
+                logger.warning(f"ChromaDB attempt {attempt + 1} failed: {str(e)}")
+                if attempt == max_retries - 1:
+                    # Last attempt - try persistent client as fallback
+                    try:
+                        chroma_path = "/tmp/chroma_store" if os.path.exists("/tmp") else "./chroma_store"
+                        os.makedirs(chroma_path, exist_ok=True)
+                        chroma_client = chromadb.PersistentClient(path=chroma_path)
+                        collection = chroma_client.get_or_create_collection(
+                            name="pdf_chunks", 
+                            embedding_function=embedder
+                        )
+                        logger.info("ChromaDB initialized with persistent client")
+                        break
+                    except Exception as e2:
+                        logger.error(f"All ChromaDB initialization attempts failed: {str(e2)}")
+                        raise
+        
+        if collection is None:
+            raise RuntimeError("Failed to initialize ChromaDB collection")
+            
+        logger.info("Loading sentence transformer...")
+        sentence_model = SentenceTransformer('all-mpnet-base-v2')
+        
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise ValueError("GEMINI_API_KEY not found in environment variables")
@@ -249,22 +312,14 @@ def initialize_components():
         logger.info("Initializing conversation chain...")
         conversation = ConversationChain(llm=llm, memory=ConversationBufferMemory())
         
-        logger.info("Loading sentence transformer...")
-        sentence_model = SentenceTransformer('all-mpnet-base-v2')
-        
-        logger.info("Initializing ChromaDB...")
-        # Use /tmp for Render deployment
-        chroma_path = "/tmp/chroma_store" if os.path.exists("/tmp") else "./chroma_store"
-        chroma_client = chromadb.PersistentClient(path=chroma_path)
-        embedder = SentenceTransformerEmbeddingFunction(model_name="all-mpnet-base-v2")
-        collection = chroma_client.get_or_create_collection(name="pdf_chunks", embedding_function=embedder)
-        
         logger.info("All components initialized successfully!")
         logger.info(f"Collection has {collection.count()} existing documents")
         
     except Exception as e:
         logger.error(f"Initialization error: {str(e)}")
         logger.error(traceback.format_exc())
+        # Set collection to None so we can handle it gracefully
+        collection = None
         raise
 
 # Error handlers
@@ -280,12 +335,16 @@ def internal_error(error):
 def too_large(error):
     return jsonify({"error": "File too large"}), 413
 
-# Initialize components
+# Initialize components with better error handling
 try:
     initialize_components()
+    logger.info("Initialization completed successfully")
 except Exception as e:
     logger.error(f"Failed to initialize: {str(e)}")
-    # Don't exit, let the app start and show errors in health check
+    logger.error("Server will start but some features may not work")
+    collection = None
+    llm = None
+    conversation = None
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
