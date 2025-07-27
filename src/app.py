@@ -53,19 +53,31 @@ def health():
 @app.route('/api/upload-pdf', methods=['POST'])
 def upload_pdf():
     global collection
+
+    # 🛠 Check if collection is None and re-initialize
+    if collection is None:
+        print(">> Collection not initialized. Re-initializing components...")
+        initialize_components()
+        if collection is None:
+            return jsonify({"error": "Vector store failed to initialize."}), 500
+
     if 'file' not in request.files:
         return jsonify({"error": "No file part"}), 400
     file = request.files['file']
     if file.filename == '':
         return jsonify({"error": "No selected file"}), 400
+
     filename = secure_filename(file.filename)
     filepath = os.path.join("temp_uploads", filename)
     os.makedirs("temp_uploads", exist_ok=True)
     file.save(filepath)
 
-    doc = fitz.open(filepath)
-    full_text = "\n".join(page.get_text() for page in doc)
-    doc.close()
+    try:
+        doc = fitz.open(filepath)
+        full_text = "\n".join(page.get_text() for page in doc)
+        doc.close()
+    except Exception as e:
+        return jsonify({"error": f"Could not read PDF: {str(e)}"}), 500
 
     sentences = simple_sent_tokenize(full_text)
     chunks = []
@@ -74,17 +86,26 @@ def upload_pdf():
     for i in range(0, len(sentences), chunk_size - overlap):
         chunks.append(" ".join(sentences[i:i + chunk_size]))
 
+    # 💥 Double-check collection is ready before using it
+    if collection is None:
+        return jsonify({"error": "Collection is still None"}), 500
+
     for idx, chunk in enumerate(chunks):
         collection.add(
             documents=[chunk],
             ids=[f"{filename}_{idx}"],
             metadatas=[{"source": filename}]
         )
+
     os.remove(filepath)
+
     return jsonify({
         "status": "success",
-        "chunks_created": len(chunks)
+        "filename": filename,
+        "chunks_created": len(chunks),
+        "total_documents": collection.count()
     })
+
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
