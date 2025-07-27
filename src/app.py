@@ -3,10 +3,10 @@ import logging
 import traceback
 import time
 import json
+import re
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
-from dotenv import load_dotenv
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -15,84 +15,99 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 CORS(app)
-load_dotenv()
 
-# Global variables - start with simple storage
-chunks_storage = {}
-llm = None
-conversation = None
+# Simple in-memory storage
+documents = {}
 
 @app.route("/")
 def health():
-    return jsonify({"status": "Backend is running successfully!", "timestamp": str(time.time())})
+    return jsonify({
+        "status": "Backend running successfully!", 
+        "timestamp": str(time.time()),
+        "documents_count": len(documents)
+    })
 
 @app.route('/api/health', methods=['GET'])
 def api_health():
     try:
-        status = {
+        return jsonify({
             "status": "healthy",
-            "llm_initialized": llm is not None,
-            "document_count": len(chunks_storage),
-            "python_version": os.sys.version,
-            "timestamp": time.time()
-        }
-        return jsonify(status)
+            "documents_stored": len(documents),
+            "timestamp": time.time(),
+            "message": "Simple backend without AI - ready to process PDFs"
+        })
     except Exception as e:
         logger.error(f"Health check error: {str(e)}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/api/upload-pdf', methods=['POST'])
 def upload_pdf():
-    logger.info("=== PDF Upload Started ===")
+    logger.info("=== Starting PDF Upload ===")
+    
     try:
-        global chunks_storage
-        
-        # Basic request validation
-        logger.info("Checking request...")
+        # Step 1: Check if file exists in request
+        logger.info("Step 1: Checking file in request")
         if 'file' not in request.files:
-            logger.error("No file in request.files")
-            return jsonify({"error": "No file part in request"}), 400
-            
+            logger.error("No 'file' key in request.files")
+            logger.info(f"Available keys: {list(request.files.keys())}")
+            return jsonify({"error": "No file uploaded"}), 400
+        
         file = request.files['file']
-        logger.info(f"File object received: {type(file)}")
-        logger.info(f"Filename: {file.filename}")
+        logger.info(f"Step 2: File received - name: {file.filename}, type: {type(file)}")
         
+        # Step 2: Validate file
         if not file or file.filename == '':
-            logger.error("Empty filename")
+            logger.error("File is empty or has no name")
             return jsonify({"error": "No file selected"}), 400
-            
-        # File validation
-        if not file.filename.lower().endswith('.pdf'):
-            logger.error(f"Invalid file type: {file.filename}")
-            return jsonify({"error": "Only PDF files are allowed"}), 400
-
-        # Basic processing without dependencies
-        filename = secure_filename(file.filename)
-        logger.info(f"Secure filename: {filename}")
         
-        # For now, let's just store a placeholder to test if the basic flow works
+        if not file.filename.lower().endswith('.pdf'):
+            logger.error(f"Invalid file extension: {file.filename}")
+            return jsonify({"error": "Only PDF files allowed"}), 400
+        
+        # Step 3: Process filename
+        filename = secure_filename(file.filename)
+        logger.info(f"Step 3: Secure filename: {filename}")
+        
+        # Step 4: Try to read file content (simple test)
         try:
-            # Simple storage test
-            chunks_storage[filename] = {
-                'chunks': [f"Sample text from {filename}"],
+            file_content = file.read()
+            file_size = len(file_content)
+            logger.info(f"Step 4: File read successfully - size: {file_size} bytes")
+            
+            # Reset file pointer for potential future use
+            file.seek(0)
+            
+        except Exception as read_error:
+            logger.error(f"Could not read file: {str(read_error)}")
+            return jsonify({"error": "Could not read uploaded file"}), 400
+        
+        # Step 5: For now, just store basic info (no PDF processing)
+        try:
+            document_info = {
+                'filename': filename,
+                'size': file_size,
                 'upload_time': time.time(),
-                'full_text': f"This is a test upload of {filename}"
+                'status': 'uploaded_successfully',
+                'content_preview': f'PDF file with {file_size} bytes'
             }
-            logger.info(f"Test storage successful for {filename}")
+            
+            documents[filename] = document_info
+            logger.info(f"Step 5: Document stored successfully: {filename}")
             
             return jsonify({
                 "status": "success",
-                "message": f"File {filename} uploaded successfully! (Test mode - PDF processing disabled)",
-                "chunks_created": 1,
-                "filename": filename
+                "message": f"File '{filename}' uploaded successfully! ({file_size} bytes)",
+                "filename": filename,
+                "size": file_size,
+                "note": "PDF processing will be added in next step"
             })
             
         except Exception as storage_error:
-            logger.error(f"Storage test failed: {str(storage_error)}")
-            return jsonify({"error": f"Storage error: {str(storage_error)}"}), 500
-        
+            logger.error(f"Storage failed: {str(storage_error)}")
+            return jsonify({"error": f"Could not store file info: {str(storage_error)}"}), 500
+            
     except Exception as e:
-        logger.error(f"=== Upload Failed ===")
+        logger.error("=== UPLOAD FAILED ===")
         logger.error(f"Error type: {type(e).__name__}")
         logger.error(f"Error message: {str(e)}")
         logger.error("Full traceback:")
@@ -101,114 +116,68 @@ def upload_pdf():
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
+    logger.info("=== Chat Request ===")
+    
     try:
-        logger.info("Chat endpoint called")
-        global chunks_storage
-        
+        # Get request data
         data = request.get_json()
         if not data or 'message' not in data:
             return jsonify({"error": "No message provided"}), 400
-            
+        
         question = data.get("message", "").strip()
         if not question:
             return jsonify({"error": "Empty message"}), 400
-
+        
         logger.info(f"Question: {question}")
-        logger.info(f"Available documents: {len(chunks_storage)}")
-
-        # Get context from stored chunks
-        context = ""
-        context_count = 0
+        logger.info(f"Documents available: {len(documents)}")
         
-        if chunks_storage:
-            # Simple keyword matching
-            question_words = set(question.lower().split())
-            relevant_chunks = []
-            
-            for filename, file_data in chunks_storage.items():
-                for chunk in file_data['chunks']:
-                    chunk_words = set(chunk.lower().split())
-                    # Find common words
-                    common_words = question_words & chunk_words
-                    if len(common_words) > 0:
-                        relevance_score = len(common_words)
-                        relevant_chunks.append((chunk, relevance_score))
-            
-            # Sort by relevance and take top 3
-            relevant_chunks.sort(key=lambda x: x[1], reverse=True)
-            context_chunks = [chunk for chunk, _ in relevant_chunks[:3]]
-            context = "\n\n".join(context_chunks)
-            context_count = len(context_chunks)
-            
-            logger.info(f"Found {context_count} relevant chunks")
+        # Generate simple response
+        if documents:
+            doc_list = list(documents.keys())
+            response_text = f"""I have {len(documents)} document(s) uploaded: {', '.join(doc_list)}
 
-        # Generate response
-        response_text = ""
-        
-        if context:
-            response_text = f"""Based on the uploaded documents:
+Your question: "{question}"
 
-{context}
+Currently, I can only confirm that your documents are uploaded successfully. PDF text processing will be added in the next update.
 
-For your question: "{question}"
-
-I found {context_count} relevant sections in the uploaded documents. The information above should help answer your question about Rajasthan government schemes."""
+For now, I can tell you:
+- Number of documents: {len(documents)}
+- Document names: {', '.join(doc_list)}
+- Upload times: {[f"{name}: {time.ctime(info['upload_time'])}" for name, info in documents.items()]}"""
         else:
-            if chunks_storage:
-                response_text = f"""I couldn't find specific information related to your question "{question}" in the uploaded documents. 
+            response_text = f"""Your question: "{question}"
 
-The documents contain information about Rajasthan government schemes, but your question might need to be more specific or the relevant information might not be in the uploaded files.
+I don't have any documents uploaded yet. Please upload a PDF file first, then I'll be able to help you find information in it.
 
-Try asking about:
-- Specific scheme names
-- Eligibility criteria
-- Application processes
-- Required documents
-
-Or upload more relevant documents that might contain the information you're looking for."""
-            else:
-                response_text = f"""I don't have any documents uploaded yet to answer your question about "{question}".
-
-Please upload PDF documents related to Rajasthan government schemes first, and then I'll be able to help you find specific information.
-
-You can ask questions about:
-- Government scheme details
-- Eligibility requirements  
-- Application procedures
-- Required documents
-- Contact information"""
-
-        # Format response
-        try:
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup('<div class="ai-response"></div>', 'html.parser')
-            container = soup.find('div')
-            
-            paragraphs = response_text.split('\n\n')
-            for para in paragraphs:
-                if para.strip():
-                    p = soup.new_tag('p')
-                    p.string = para.strip()
-                    container.append(p)
-            
-            formatted_html = str(soup)
-        except Exception as e:
-            logger.warning(f"HTML formatting failed: {str(e)}")
-            formatted_html = f'<div class="ai-response"><p>{response_text}</p></div>'
-
+Once you upload documents, I'll be able to search through them and provide relevant information about Rajasthan government schemes."""
+        
+        # Simple HTML formatting
+        html_response = f'<div class="ai-response"><p>{response_text.replace(chr(10), "</p><p>")}</p></div>'
+        
         return jsonify({
             "response": {
                 "raw": response_text,
-                "html": formatted_html,
+                "html": html_response,
                 "text": response_text
             },
-            "context_found": context_count
+            "documents_available": len(documents)
         })
-            
+        
     except Exception as e:
         logger.error(f"Chat error: {str(e)}")
         logger.error(traceback.format_exc())
         return jsonify({"error": f"Chat failed: {str(e)}"}), 500
+
+@app.route('/api/documents', methods=['GET'])
+def list_documents():
+    """Debug endpoint to see what documents are stored"""
+    try:
+        return jsonify({
+            "documents": documents,
+            "count": len(documents)
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 # Error handlers
 @app.errorhandler(404)
@@ -217,7 +186,7 @@ def not_found(error):
 
 @app.errorhandler(500)
 def internal_error(error):
-    logger.error(f"Internal server error: {str(error)}")
+    logger.error(f"500 error: {str(error)}")
     return jsonify({"error": "Internal server error"}), 500
 
 @app.errorhandler(413)
@@ -226,7 +195,6 @@ def too_large(error):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    logger.info(f"Starting server on port {port}")
-    logger.info(f"Python version: {os.sys.version}")
-    logger.info(f"Available documents: {len(chunks_storage)}")
+    logger.info(f"Starting simple backend on port {port}")
+    logger.info("No AI dependencies - just basic file upload and storage")
     app.run(host="0.0.0.0", port=port, debug=False)
