@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
 import Header from './Header';
 import './App.css';
@@ -8,11 +8,42 @@ import Widget_1 from './Widget_1';
 import Widget_2 from './Widget_2';
 import Widget_3 from './Widget_3';
 
+const BACKEND_URL = 'https://pension-scheme.onrender.com'; // Replace with your actual Render URL
+
 const ChatComponent = () => {
   const [conversations, setConversations] = useState([]);
   const [currentMessage, setCurrentMessage] = useState('');
   const [messages, setMessages] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [backendStatus, setBackendStatus] = useState('checking');
+  const [isUploading, setIsUploading] = useState(false);
+
+  // Check backend health on component mount
+  useEffect(() => {
+    checkBackendHealth();
+  }, []);
+
+  const checkBackendHealth = async () => {
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/health`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setBackendStatus('connected');
+        console.log('Backend health:', data);
+      } else {
+        setBackendStatus('error');
+      }
+    } catch (error) {
+      console.error('Backend health check failed:', error);
+      setBackendStatus('error');
+    }
+  };
 
   const handleNewChat = () => {
     const newConversation = {
@@ -25,7 +56,7 @@ const ChatComponent = () => {
   };
 
   const handleSendMessage = async () => {
-    if (currentMessage.trim()) {
+    if (currentMessage.trim() && backendStatus === 'connected') {
       const userMessage = {
         id: Date.now(),
         text: currentMessage,
@@ -34,23 +65,33 @@ const ChatComponent = () => {
       };
 
       setMessages(prev => [...prev, userMessage]);
+      const messageToSend = currentMessage;
       setCurrentMessage('');
       setIsLoading(true);
 
       try {
-        const response = await fetch('https://pension-scheme.onrender.com/api/chat', {
+        const response = await fetch(`${BACKEND_URL}/api/chat`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ message: currentMessage }),
+          body: JSON.stringify({ message: messageToSend }),
         });
 
-        const data = await response.json();
+        let data;
+        try {
+          data = await response.json();
+        } catch (jsonError) {
+          throw new Error('Invalid response from server');
+        }
+
+        if (!response.ok) {
+          throw new Error(data.error || `HTTP ${response.status}`);
+        }
 
         const botMessage = {
           id: Date.now() + 1,
-          text: data.response?.raw || data.response || data.error || 'Sorry, I encountered an error.',
+          text: data.response?.raw || data.response?.text || 'Sorry, I encountered an error.',
           html: data.response?.html || null,
           structured: data.response?.structured || null,
           sender: 'bot',
@@ -58,12 +99,12 @@ const ChatComponent = () => {
           contextFound: data.context_found || 0
         };
 
-
         setMessages(prev => [...prev, botMessage]);
       } catch (error) {
+        console.error('Chat error:', error);
         const errorMessage = {
           id: Date.now() + 1,
-          text: 'Sorry, I could not connect to the server.',
+          text: `Sorry, I encountered an error: ${error.message}`,
           sender: 'bot',
           timestamp: new Date()
         };
@@ -71,6 +112,14 @@ const ChatComponent = () => {
       } finally {
         setIsLoading(false);
       }
+    } else if (backendStatus !== 'connected') {
+      const statusMessage = {
+        id: Date.now(),
+        text: 'Backend is not connected. Please wait for the server to initialize or refresh the page.',
+        sender: 'system',
+        timestamp: new Date()
+      };
+      setMessages(prev => [...prev, statusMessage]);
     }
   };
 
@@ -83,64 +132,127 @@ const ChatComponent = () => {
 
   const handleFileUpload = async (event) => {
     const file = event.target.files[0];
-    if (file && file.type === 'application/pdf') {
-      const formData = new FormData();
-      formData.append('file', file); 
+    if (!file) return;
 
-      try {
-        const response = await fetch('https://pension-scheme.onrender.com/api/upload-pdf', {
-          method: 'POST',
-          body: formData, 
-        });
+    if (backendStatus !== 'connected') {
+      alert('Backend is not connected. Please wait for the server to initialize.');
+      return;
+    }
 
-        let data;
-        try {
-        data = await response.json();
-        } catch (err) {
-        console.error('Invalid JSON in upload response:', err);
-        alert('Upload failed: Server returned invalid response.');
-        return;
-        }
-        if (data.status === 'success') {
-          const uploadMessage = {
-            id: Date.now(),
-            text: `PDF uploaded successfully!`,
-            sender: 'system',
-            timestamp: new Date()
-          };
-          setMessages(prev => [...prev, uploadMessage]);
-        } else {
-          alert(data.message || data.error);
-        }
-      } catch (error) {
-        alert('Error uploading file');
-      }
-    } else {
+    if (file.type !== 'application/pdf') {
       alert('Please select a PDF file');
+      return;
+    }
+
+    if (file.size > 50 * 1024 * 1024) { // 50MB limit
+      alert('File size too large. Please select a file smaller than 50MB.');
+      return;
+    }
+
+    setIsUploading(true);
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const uploadMessage = {
+        id: Date.now(),
+        text: `Uploading "${file.name}"...`,
+        sender: 'system',
+        timestamp: new Date()
+      };
+      setMessages(prev => [...prev, uploadMessage]);
+
+      const response = await fetch(`${BACKEND_URL}/api/upload-pdf`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      let data;
+      try {
+        data = await response.json();
+      } catch (jsonError) {
+        throw new Error('Invalid response from server');
+      }
+
+      if (!response.ok) {
+        throw new Error(data.error || `HTTP ${response.status}`);
+      }
+
+      if (data.status === 'success') {
+        const successMessage = {
+          id: Date.now() + 1,
+          text: `✅ ${data.message || 'PDF uploaded successfully!'} You can now ask questions about the document.`,
+          sender: 'system',
+          timestamp: new Date()
+        };
+        setMessages(prev => [...prev, successMessage]);
+      } else {
+        throw new Error(data.error || 'Upload failed');
+      }
+    } catch (error) {
+      console.error('Upload error:', error);
+      const errorMessage = {
+        id: Date.now() + 2,
+        text: `❌ Upload failed: ${error.message}`,
+        sender: 'system',
+        timestamp: new Date()
+      };
+      setMessages(prev => [...prev, errorMessage]);
+    } finally {
+      setIsUploading(false);
+      // Clear the input
+      event.target.value = '';
     }
   };
 
   const MessageContent = ({ message }) => {
-  if (message.sender === 'bot' && message.html) {
+    if (message.sender === 'bot' && message.html) {
+      return (
+        <div className="message-content">
+          <div
+            className="formatted-response"
+            dangerouslySetInnerHTML={{ __html: message.html }}
+          />
+        </div>
+      );
+    }
     return (
       <div className="message-content">
-        <div
-          className="formatted-response"
-          dangerouslySetInnerHTML={{ __html: message.html }}
-        />
+        {message.text}
       </div>
     );
-  }
-  return (
-    <div className="message-content">
-      {message.text}
-    </div>
-  );
-};
+  };
 
+  const BackendStatus = () => {
+    const statusConfig = {
+      checking: { color: '#ffa500', text: 'Connecting to server...' },
+      connected: { color: '#4caf50', text: 'Connected' },
+      error: { color: '#f44336', text: 'Server offline' }
+    };
+
+    const config = statusConfig[backendStatus];
+    
+    
+    return (
+      <div style={{ 
+        position: 'fixed', 
+        top: '10px', 
+        right: '10px', 
+        background: 'rgba(0,0,0,0.8)', 
+        color: 'white', 
+        padding: '5px 10px', 
+        borderRadius: '5px', 
+        fontSize: '12px',
+        zIndex: 1000
+      }}>
+        <span style={{ color: config.color }}>●</span> {config.text}
+      </div>
+    );
+  };
 
   return (
     <div className="main-container">
+      <BackendStatus />
       <div className="chat-widget">
         <div className="widget-left">
           <button className="new-chat-button" onClick={handleNewChat}>
@@ -150,10 +262,18 @@ const ChatComponent = () => {
           <div className="faq-section">
             <h3 className="faq-title">Frequently Asked Questions</h3>
             <div className="faq-list">
-              <button className="faq-question" onClick={() => setCurrentMessage('How can I apply for a government scheme?')}>How can I apply for a government scheme?</button>
-              <button className="faq-question" onClick={() => setCurrentMessage("What documents are required for Rajasthan's pension schemes?")}>What documents are required for Rajasthan's pension schemes?</button>
-              <button className="faq-question" onClick={() => setCurrentMessage('Where can I find the Rajasthan government calendar?')}>Where can I find the Rajasthan government calendar?</button>
-              <button className="faq-question" onClick={() => setCurrentMessage('How do I contact support?')}>How do I contact support?</button>
+              <button className="faq-question" onClick={() => setCurrentMessage('How can I apply for a government scheme?')}>
+                How can I apply for a government scheme?
+              </button>
+              <button className="faq-question" onClick={() => setCurrentMessage("What documents are required for Rajasthan's pension schemes?")}>
+                What documents are required for Rajasthan's pension schemes?
+              </button>
+              <button className="faq-question" onClick={() => setCurrentMessage('Where can I find the Rajasthan government calendar?')}>
+                Where can I find the Rajasthan government calendar?
+              </button>
+              <button className="faq-question" onClick={() => setCurrentMessage('How do I contact support?')}>
+                How do I contact support?
+              </button>
             </div>
           </div>
         </div>
@@ -201,30 +321,37 @@ const ChatComponent = () => {
             <div className="message-input-wrapper">
               <input
                 type="file"
-                name="file" 
+                name="file"
                 accept=".pdf"
                 onChange={handleFileUpload}
                 style={{ display: 'none' }}
                 id="pdf-upload"
+                disabled={isUploading || backendStatus !== 'connected'}
               />
-              <label htmlFor="pdf-upload" className="attach-button">
+              <label 
+                htmlFor="pdf-upload" 
+                className={`attach-button ${isUploading || backendStatus !== 'connected' ? 'disabled' : ''}`}
+                title={backendStatus !== 'connected' ? 'Server not connected' : 'Upload PDF'}
+              >
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/>
                 </svg>
+                {isUploading && <span className="upload-spinner">⏳</span>}
               </label>
               <input
                 type="text"
-                placeholder="Send a message..."
+                placeholder={backendStatus !== 'connected' ? 'Connecting to server...' : 'Send a message...'}
                 value={currentMessage}
                 onChange={(e) => setCurrentMessage(e.target.value)}
                 onKeyPress={handleKeyPress}
                 className="message-input"
-                disabled={isLoading}
+                disabled={isLoading || backendStatus !== 'connected'}
               />
               <button 
                 className="send-button"
                 onClick={handleSendMessage}
-                disabled={!currentMessage.trim() || isLoading}
+                disabled={!currentMessage.trim() || isLoading || backendStatus !== 'connected'}
+                title={backendStatus !== 'connected' ? 'Server not connected' : 'Send message'}
               >
                 <span className="send-icon">➤</span>
               </button>
