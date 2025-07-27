@@ -167,11 +167,17 @@ const ChatComponent = () => {
         body: formData,
       });
 
+      console.log('Upload response status:', response.status);
+      console.log('Upload response headers:', response.headers);
+
       let data;
       try {
-        data = await response.json();
+        const responseText = await response.text();
+        console.log('Raw response:', responseText);
+        data = JSON.parse(responseText);
       } catch (jsonError) {
-        throw new Error('Invalid response from server');
+        console.error('JSON parse error:', jsonError);
+        throw new Error(`Invalid response from server: ${jsonError.message}`);
       }
 
       if (!response.ok) {
@@ -231,7 +237,6 @@ const ChatComponent = () => {
     };
 
     const config = statusConfig[backendStatus];
-    
     
     return (
       <div style={{ 
