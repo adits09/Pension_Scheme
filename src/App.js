@@ -7,6 +7,7 @@ import SignupPage from './Signup_Page';
 import Widget_1 from './Widget_1';
 import Widget_2 from './Widget_2';
 import Widget_3 from './Widget_3';
+import ChatWithPDF from './chatWithPDF';
 
 const ChatComponent = () => {
   const [conversations, setConversations] = useState([]);
@@ -38,7 +39,7 @@ const ChatComponent = () => {
       setIsLoading(true);
 
       try {
-        const response = await fetch('https://pension-scheme.onrender.com/api/chat', {
+        const response = await fetch('http://127.0.0.1:10000/api/chat', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -57,7 +58,6 @@ const ChatComponent = () => {
           timestamp: new Date(),
           contextFound: data.context_found || 0
         };
-
 
         setMessages(prev => [...prev, botMessage]);
       } catch (error) {
@@ -85,21 +85,21 @@ const ChatComponent = () => {
     const file = event.target.files[0];
     if (file && file.type === 'application/pdf') {
       const formData = new FormData();
-      formData.append('file', file); 
+      formData.append('file', file);
 
       try {
-        const response = await fetch('https://pension-scheme.onrender.com/api/upload-pdf', {
+        const response = await fetch('http://127.0.0.1:10000/api/upload-pdf', {
           method: 'POST',
-          body: formData, 
+          body: formData,
         });
 
         let data;
         try {
-        data = await response.json();
+          data = await response.json();
         } catch (err) {
-        console.error('Invalid JSON in upload response:', err);
-        alert('Upload failed: Server returned invalid response.');
-        return;
+          console.error('Invalid JSON in upload response:', err);
+          alert('Upload failed: Server returned invalid response.');
+          return;
         }
         if (data.status === 'success') {
           const uploadMessage = {
@@ -121,23 +121,22 @@ const ChatComponent = () => {
   };
 
   const MessageContent = ({ message }) => {
-  if (message.sender === 'bot' && message.html) {
+    if (message.sender === 'bot' && message.html) {
+      return (
+        <div className="message-content">
+          <div
+            className="formatted-response"
+            dangerouslySetInnerHTML={{ __html: message.html }}
+          />
+        </div>
+      );
+    }
     return (
       <div className="message-content">
-        <div
-          className="formatted-response"
-          dangerouslySetInnerHTML={{ __html: message.html }}
-        />
+        {message.text}
       </div>
     );
-  }
-  return (
-    <div className="message-content">
-      {message.text}
-    </div>
-  );
-};
-
+  };
 
   return (
     <div className="main-container">
@@ -201,7 +200,7 @@ const ChatComponent = () => {
             <div className="message-input-wrapper">
               <input
                 type="file"
-                name="file" 
+                name="file"
                 accept=".pdf"
                 onChange={handleFileUpload}
                 style={{ display: 'none' }}
@@ -209,7 +208,7 @@ const ChatComponent = () => {
               />
               <label htmlFor="pdf-upload" className="attach-button">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/>
+                  <path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z" />
                 </svg>
               </label>
               <input
@@ -221,7 +220,7 @@ const ChatComponent = () => {
                 className="message-input"
                 disabled={isLoading}
               />
-              <button 
+              <button
                 className="send-button"
                 onClick={handleSendMessage}
                 disabled={!currentMessage.trim() || isLoading}
@@ -248,6 +247,7 @@ const AppContent = () => {
         <Route path="/" element={<ChatComponent />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignupPage />} />
+        <Route path="/chat" element={<ChatWithPDF />} />
       </Routes>
     </div>
   );
