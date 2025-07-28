@@ -8,6 +8,8 @@ import Widget_1 from './Widget_1';
 import Widget_2 from './Widget_2';
 import Widget_3 from './Widget_3';
 import ChatWithPDF from './chatWithPDF';
+const API_BASE_URL = "https://pension-scheme-backend.onrender.com"; // Replace with your Render backend URL
+
 
 const ChatComponent = () => {
   const [conversations, setConversations] = useState([]);
@@ -39,7 +41,7 @@ const ChatComponent = () => {
       setIsLoading(true);
 
       try {
-        const response = await fetch('http://127.0.0.1:10000/api/chat', {
+        const response = await fetch(`${API_BASE_URL}/api/chat`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -88,7 +90,7 @@ const ChatComponent = () => {
       formData.append('file', file);
 
       try {
-        const response = await fetch('http://127.0.0.1:10000/api/upload-pdf', {
+        const response = await fetch(`${API_BASE_URL}/api/upload-pdf`, {
           method: 'POST',
           body: formData,
         });
