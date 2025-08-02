@@ -8,7 +8,7 @@ import Widget_1 from './Widget_1';
 import Widget_2 from './Widget_2';
 import Widget_3 from './Widget_3';
 import ChatWithPDF from './chatWithPDF';
-const API_BASE_URL = "https://pension-scheme-backend.onrender.com"; // Replace with your Render backend URL
+const API_BASE_URL = "https://pension-scheme.onrender.com"; // Replace with your Render backend URL
 
 
 const ChatComponent = () => {
